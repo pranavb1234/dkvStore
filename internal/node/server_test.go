@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pranavb1234/dkvStore/internal/config"
 	"github.com/pranavb1234/dkvStore/internal/store"
 )
 
@@ -118,7 +119,17 @@ func TestKeyValueAPIRejectsOversizedValue(t *testing.T) {
 }
 
 func testHandler() http.Handler {
-	return NewHandler("node-1", slog.New(slog.NewTextHandler(io.Discard, nil)), store.New(store.DefaultMaxValueBytes))
+	handler, err := NewHandler(config.Config{
+		NodeID:         "node-1",
+		ListenAddr:     "127.0.0.1:8081",
+		VirtualNodes:   8,
+		RequestTimeout: "500ms",
+		Nodes:          []config.Peer{{ID: "node-1", Address: "127.0.0.1:8081"}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), store.New(store.DefaultMaxValueBytes))
+	if err != nil {
+		panic(err)
+	}
+	return handler
 }
 
 func request(t *testing.T, handler http.Handler, method, path, body string) *httptest.ResponseRecorder {

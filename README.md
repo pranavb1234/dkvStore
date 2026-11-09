@@ -93,6 +93,20 @@ move to it. When it leaves, its keys move to the next clockwise owner. With a
 well-distributed ring, each membership change moves roughly that node's share
 of keys; the exact amount depends on the virtual-node tokens.
 
+## Routing
+
+Every node builds the same ring from its complete `nodes` configuration list.
+For a public `PUT`, `GET`, or `DELETE`, the receiving node calculates the
+key's primary. If it is not the primary, it forwards the request once to that
+node's `/internal/route/kv/{key}` endpoint using the configured
+`request_timeout`. The internal endpoint requires a one-hop header and serves
+the request locally; it never forwards, preventing routing loops.
+
+When the primary cannot be reached, the entry node returns `502 Bad Gateway`
+with `primary_unreachable`; a peer deadline produces `504 Gateway Timeout`
+with `primary_timeout`. Logs include the local node ID and `routing_target`,
+but never a stored value.
+
 ## Test
 
 ```sh

@@ -2,56 +2,171 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
+	"github.com/pranavb1234/dkvStore/internal/config"
+	"github.com/pranavb1234/dkvStore/internal/ring"
 	"github.com/pranavb1234/dkvStore/internal/store"
 )
 
-// NewHandler returns the public HTTP handler for a node. The supplied store is
-// local only; routing and replication are deliberately not part of Phase 2.
-func NewHandler(nodeID string, logger *slog.Logger, values *store.Store) http.Handler {
+const routeHopHeader = "X-DKV-Route-Hop"
+
+// NewHandler builds a node handler from validated static cluster configuration.
+func NewHandler(cfg config.Config, logger *slog.Logger, values *store.Store) (http.Handler, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validate node config: %w", err)
+	}
+	timeout, _ := cfg.Timeout()
+	hashRing, err := ring.New(cfg.VirtualNodes)
+	if err != nil {
+		return nil, fmt.Errorf("create hash ring: %w", err)
+	}
+	peers := make(map[string]string, len(cfg.Nodes))
+	for _, peer := range cfg.Nodes {
+		if err := hashRing.Add(peer.ID); err != nil {
+			return nil, fmt.Errorf("add node %q to hash ring: %w", peer.ID, err)
+		}
+		peers[peer.ID] = peer.Address
+	}
+
+	server := &server{
+		nodeID:  cfg.NodeID,
+		logger:  logger.With("node_id", cfg.NodeID),
+		values:  values,
+		ring:    hashRing,
+		peers:   peers,
+		timeout: timeout,
+		client:  &http.Client{Timeout: timeout},
+	}
+	return server.routes(), nil
+}
+
+type server struct {
+	nodeID  string
+	logger  *slog.Logger
+	values  *store.Store
+	ring    *ring.Ring
+	peers   map[string]string
+	timeout time.Duration
+	client  *http.Client
+}
+
+func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w, http.MethodGet)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(struct {
-			NodeID string `json:"node_id"`
-			Status string `json:"status"`
-		}{NodeID: nodeID, Status: "ok"}); err != nil {
-			logger.Error("write health response", "error", err)
-		}
-	})
-	mux.HandleFunc("/kv", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusBadRequest, "invalid_key", "key must not be empty")
-	})
-	mux.HandleFunc("/kv/", func(w http.ResponseWriter, r *http.Request) {
-		key := strings.TrimPrefix(r.URL.Path, "/kv/")
-		if key == "" {
-			writeError(w, http.StatusBadRequest, "invalid_key", "key must not be empty")
-			return
-		}
-
-		switch r.Method {
-		case http.MethodPut:
-			putValue(w, r, key, values)
-		case http.MethodGet:
-			getValue(w, key, values)
-		case http.MethodDelete:
-			deleteValue(w, key, values)
-		default:
-			methodNotAllowed(w, "GET, PUT, DELETE")
-		}
-	})
+	mux.HandleFunc("/health", s.health)
+	mux.HandleFunc("/kv", emptyKey)
+	mux.HandleFunc("/kv/", s.publicKeyValue)
+	mux.HandleFunc("/internal/route/kv/", s.internalKeyValue)
 	return mux
+}
+
+func (s *server) health(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"node_id": s.nodeID, "status": "ok"})
+}
+
+func emptyKey(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusBadRequest, "invalid_key", "key must not be empty")
+}
+
+func (s *server) publicKeyValue(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, "/kv/")
+	if key == "" {
+		emptyKey(w, r)
+		return
+	}
+	primary, ok := s.ring.Primary(key)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "no_primary", "no primary node is configured")
+		return
+	}
+	if primary != s.nodeID {
+		s.forwardToPrimary(w, r, key, primary)
+		return
+	}
+	s.serveLocal(w, r, key)
+}
+
+func (s *server) internalKeyValue(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, "/internal/route/kv/")
+	if key == "" {
+		emptyKey(w, r)
+		return
+	}
+	if r.Header.Get(routeHopHeader) != "1" {
+		writeError(w, http.StatusLoopDetected, "routing_loop", "internal routing requires exactly one hop")
+		return
+	}
+	primary, _ := s.ring.Primary(key)
+	if primary != s.nodeID {
+		writeError(w, http.StatusLoopDetected, "routing_loop", "request reached a non-primary node")
+		return
+	}
+	s.serveLocal(w, r, key)
+}
+
+func (s *server) forwardToPrimary(w http.ResponseWriter, r *http.Request, key, primary string) {
+	address, exists := s.peers[primary]
+	if !exists {
+		writeError(w, http.StatusServiceUnavailable, "no_primary", "primary address is not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
+	defer cancel()
+	target := "http://" + address + "/internal/route/kv/" + url.PathEscape(key)
+	request, err := http.NewRequestWithContext(ctx, r.Method, target, r.Body)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not create forwarding request")
+		return
+	}
+	request.Header.Set(routeHopHeader, "1")
+	request.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+	s.logger.Info("forwarding request", "method", r.Method, "key", key, "routing_target", primary)
+	response, err := s.client.Do(request)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeError(w, http.StatusGatewayTimeout, "primary_timeout", "primary did not respond before the deadline")
+			return
+		}
+		writeError(w, http.StatusBadGateway, "primary_unreachable", "could not reach primary node")
+		return
+	}
+	defer response.Body.Close()
+	if contentType := response.Header.Get("Content-Type"); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	if allow := response.Header.Get("Allow"); allow != "" {
+		w.Header().Set("Allow", allow)
+	}
+	w.WriteHeader(response.StatusCode)
+	if _, err := io.Copy(w, response.Body); err != nil {
+		s.logger.Error("copy forwarded response", "routing_target", primary, "error", err)
+	}
+}
+
+func (s *server) serveLocal(w http.ResponseWriter, r *http.Request, key string) {
+	switch r.Method {
+	case http.MethodPut:
+		putValue(w, r, key, s.values)
+	case http.MethodGet:
+		getValue(w, key, s.values)
+	case http.MethodDelete:
+		deleteValue(w, key, s.values)
+	default:
+		methodNotAllowed(w, "GET, PUT, DELETE")
+	}
 }
 
 func putValue(w http.ResponseWriter, r *http.Request, key string, values *store.Store) {

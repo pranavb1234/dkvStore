@@ -8,8 +8,10 @@ import (
 
 func TestConfigValidate(t *testing.T) {
 	valid := Config{
-		NodeID:     "node-1",
-		ListenAddr: "127.0.0.1:8081",
+		NodeID:         "node-1",
+		ListenAddr:     "127.0.0.1:8081",
+		VirtualNodes:   8,
+		RequestTimeout: "500ms",
 		Nodes: []Peer{
 			{ID: "node-1", Address: "127.0.0.1:8081"},
 			{ID: "node-2", Address: "127.0.0.1:8082"},
@@ -26,6 +28,8 @@ func TestConfigValidate(t *testing.T) {
 		{name: "duplicate address", edit: func(c *Config) { c.Nodes[1].Address = "127.0.0.1:8081" }},
 		{name: "self missing", edit: func(c *Config) { c.Nodes[0].ID = "node-3" }},
 		{name: "self address conflicts", edit: func(c *Config) { c.Nodes[0].Address = "127.0.0.1:9091" }},
+		{name: "missing virtual nodes", edit: func(c *Config) { c.VirtualNodes = 0 }},
+		{name: "invalid request timeout", edit: func(c *Config) { c.RequestTimeout = "never" }},
 	}
 
 	if err := valid.Validate(); err != nil {

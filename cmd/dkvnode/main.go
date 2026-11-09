@@ -33,9 +33,14 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("node_id", cfg.NodeID)
+	handler, err := node.NewHandler(cfg, logger, store.New(store.DefaultMaxValueBytes))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create node handler: %v\n", err)
+		os.Exit(1)
+	}
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           node.NewHandler(cfg.NodeID, logger, store.New(store.DefaultMaxValueBytes)),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

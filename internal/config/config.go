@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
@@ -17,9 +18,11 @@ var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 // Config identifies this process and the complete static cluster membership.
 // Nodes must include the local node exactly once.
 type Config struct {
-	NodeID     string `json:"node_id"`
-	ListenAddr string `json:"listen_addr"`
-	Nodes      []Peer `json:"nodes"`
+	NodeID         string `json:"node_id"`
+	ListenAddr     string `json:"listen_addr"`
+	Nodes          []Peer `json:"nodes"`
+	VirtualNodes   int    `json:"virtual_nodes"`
+	RequestTimeout string `json:"request_timeout"`
 }
 
 // Peer is one node's stable identity and HTTP listen address.
@@ -64,6 +67,12 @@ func (c Config) Validate() error {
 	if err := validAddress(c.ListenAddr); err != nil {
 		return fmt.Errorf("invalid listen_addr: %w", err)
 	}
+	if c.VirtualNodes <= 0 {
+		return fmt.Errorf("virtual_nodes must be positive")
+	}
+	if _, err := c.Timeout(); err != nil {
+		return fmt.Errorf("invalid request_timeout: %w", err)
+	}
 	if len(c.Nodes) == 0 {
 		return fmt.Errorf("nodes must contain the complete membership list")
 	}
@@ -98,6 +107,15 @@ func (c Config) Validate() error {
 		return fmt.Errorf("self address %q does not match listen_addr %q", selfAddress, c.ListenAddr)
 	}
 	return nil
+}
+
+// Timeout returns the configured bounded deadline for peer HTTP requests.
+func (c Config) Timeout() (time.Duration, error) {
+	timeout, err := time.ParseDuration(c.RequestTimeout)
+	if err != nil || timeout <= 0 {
+		return 0, fmt.Errorf("must be a positive Go duration")
+	}
+	return timeout, nil
 }
 
 func validNodeID(id string) bool {
