@@ -118,6 +118,7 @@ func (d *dashboard) kvHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "key is required"})
 		return
 	}
+	w.Header().Set("X-DKV-Coordinator", node)
 	method, body := r.Method, r.Body
 	if method != http.MethodGet && method != http.MethodPut && method != http.MethodDelete {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "use GET, PUT, or DELETE"})
