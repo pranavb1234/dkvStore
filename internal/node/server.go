@@ -83,11 +83,17 @@ type server struct {
 	peerHealth        map[string]bool
 	demoAdminEnabled  bool
 	simulatedDown     atomic.Bool
+	requests          atomic.Uint64
+	forwards          atomic.Uint64
+	replicaAcks       atomic.Uint64
+	writeQuorumFails  atomic.Uint64
+	readQuorumFails   atomic.Uint64
 }
 
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.health)
+	mux.HandleFunc("/metrics", s.metrics)
 	mux.HandleFunc("/kv", emptyKey)
 	mux.HandleFunc("/kv/", s.publicKeyValue)
 	mux.HandleFunc("/internal/route/kv/", s.internalKeyValue)
@@ -146,6 +152,21 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"node_id": s.nodeID, "status": "ok", "peers": peers})
 }
 
+func (s *server) metrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"node_id":                  s.nodeID,
+		"requests":                 s.requests.Load(),
+		"forwards":                 s.forwards.Load(),
+		"replica_acknowledgements": s.replicaAcks.Load(),
+		"write_quorum_failures":    s.writeQuorumFails.Load(),
+		"read_quorum_failures":     s.readQuorumFails.Load(),
+	})
+}
+
 func (s *server) monitorPeers(interval, timeout time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -189,6 +210,7 @@ func (s *server) publicKeyValue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("request received", "method", r.Method, "key", key)
+	s.requests.Add(1)
 	primary, ok := s.ring.Primary(key)
 	if !ok {
 		writeError(w, http.StatusServiceUnavailable, "no_primary", "no primary node is configured")
@@ -220,6 +242,7 @@ func (s *server) internalKeyValue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) forwardToPrimary(w http.ResponseWriter, r *http.Request, key, primary string) {
+	s.forwards.Add(1)
 	address, exists := s.peers[primary]
 	if !exists {
 		writeError(w, http.StatusServiceUnavailable, "no_primary", "primary address is not configured")
@@ -309,10 +332,12 @@ func (s *server) putValue(w http.ResponseWriter, r *http.Request, key string) {
 	owners := s.ring.Owners(key, s.replicationFactor)
 	acks := s.writeAcks(r.Context(), key, record, owners)
 	if acks < s.writeQuorum {
+		s.writeQuorumFails.Add(1)
 		s.logger.Warn("write quorum unavailable", "key", key, "acknowledgements", acks, "required", s.writeQuorum)
 		writeError(w, http.StatusServiceUnavailable, "write_quorum_unavailable", "write quorum could not be reached")
 		return
 	}
+	s.replicaAcks.Add(uint64(acks))
 	s.logger.Info("write quorum acknowledged", "key", key, "acknowledgements", acks, "required", s.writeQuorum)
 	writeJSON(w, status, map[string]any{
 		"key": key, "value": *request.Value, "version": record.Version,
@@ -503,6 +528,7 @@ func (s *server) getValue(w http.ResponseWriter, r *http.Request, key string) {
 		}
 	}
 	if successes < s.readQuorum {
+		s.readQuorumFails.Add(1)
 		s.logger.Warn("read quorum unavailable", "key", key, "responses", successes, "required", s.readQuorum)
 		writeError(w, http.StatusServiceUnavailable, "read_quorum_unavailable", "read quorum could not be reached")
 		return

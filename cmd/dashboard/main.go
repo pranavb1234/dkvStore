@@ -13,6 +13,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/pranavb1234/dkvStore/internal/ring"
 )
 
 //go:embed web/index.html
@@ -37,6 +39,7 @@ func main() {
 	})
 	mux.HandleFunc("/api/nodes", d.nodesHandler)
 	mux.HandleFunc("/api/kv", d.kvHandler)
+	mux.HandleFunc("/api/placement", d.placementHandler)
 	mux.HandleFunc("/api/nodes/", d.actionHandler)
 	d.logger.Info("dashboard listening", "address", ":8080")
 	if err := http.ListenAndServe(":8080", mux); err != nil {
@@ -46,9 +49,10 @@ func main() {
 
 func (d *dashboard) nodesHandler(w http.ResponseWriter, _ *http.Request) {
 	type item struct {
-		ID     string          `json:"id"`
-		Health json.RawMessage `json:"health,omitempty"`
-		Error  string          `json:"error,omitempty"`
+		ID      string          `json:"id"`
+		Health  json.RawMessage `json:"health,omitempty"`
+		Metrics json.RawMessage `json:"metrics,omitempty"`
+		Error   string          `json:"error,omitempty"`
 	}
 	results := make(chan item, len(d.nodes))
 	for id, base := range d.nodes {
@@ -64,7 +68,8 @@ func (d *dashboard) nodesHandler(w http.ResponseWriter, _ *http.Request) {
 				results <- item{ID: id, Error: string(body)}
 				return
 			}
-			results <- item{ID: id, Health: body}
+			metrics, _ := d.getJSON(base + "/metrics")
+			results <- item{ID: id, Health: body, Metrics: metrics}
 		}(id, base)
 	}
 	items := make([]item, 0, len(d.nodes))
@@ -72,6 +77,32 @@ func (d *dashboard) nodesHandler(w http.ResponseWriter, _ *http.Request) {
 		items = append(items, <-results)
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (d *dashboard) placementHandler(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "key is required"})
+		return
+	}
+	hashRing, _ := ring.New(64)
+	for id := range d.nodes {
+		_ = hashRing.Add(id)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"key": key, "owners": hashRing.Owners(key, len(d.nodes))})
+}
+
+func (d *dashboard) getJSON(target string) (json.RawMessage, error) {
+	response, err := d.client.Get(target)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, io.EOF
+	}
+	body, err := io.ReadAll(response.Body)
+	return body, err
 }
 
 func (d *dashboard) kvHandler(w http.ResponseWriter, r *http.Request) {
