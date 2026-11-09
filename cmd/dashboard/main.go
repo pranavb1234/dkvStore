@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -30,7 +31,7 @@ type dashboard struct {
 
 func main() {
 	nodes := map[string]string{}
-	for _, id := range strings.Split(defaultEnv("DKV_NODES", "node1,node2,node3"), ",") {
+	for _, id := range strings.Split(defaultEnv("DKV_NODES", "node1,node2,node3,node4,node5,node6"), ",") {
 		nodes[id] = "http://" + id + ":8080"
 	}
 	d := &dashboard{nodes: nodes, client: &http.Client{Timeout: time.Second}, logger: slog.New(slog.NewJSONHandler(os.Stdout, nil))}
@@ -91,7 +92,7 @@ func (d *dashboard) placementHandler(w http.ResponseWriter, r *http.Request) {
 	for id := range d.nodes {
 		_ = hashRing.Add(id)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"key": key, "owners": hashRing.Owners(key, len(d.nodes))})
+	writeJSON(w, http.StatusOK, map[string]any{"key": key, "owners": hashRing.Owners(key, 3)})
 }
 
 func (d *dashboard) getJSON(target string) (json.RawMessage, error) {
@@ -110,7 +111,11 @@ func (d *dashboard) getJSON(target string) (json.RawMessage, error) {
 func (d *dashboard) kvHandler(w http.ResponseWriter, r *http.Request) {
 	node, key := r.URL.Query().Get("node"), r.URL.Query().Get("key")
 	if node == "" || node == "gateway" {
-		ids := []string{"node1", "node2", "node3"}
+		ids := make([]string, 0, len(d.nodes))
+		for id := range d.nodes {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
 		node = ids[d.next.Add(1)%uint64(len(ids))]
 	}
 	base, ok := d.nodes[node]

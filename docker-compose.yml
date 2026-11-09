@@ -2,12 +2,17 @@ services:
   dashboard:
     build: .
     entrypoint: ["/usr/local/bin/dashboard"]
+    environment:
+      DKV_NODES: node1,node2,node3,node4,node5,node6
     ports:
       - "8080:8080"
     depends_on:
       - node1
       - node2
       - node3
+      - node4
+      - node5
+      - node6
 
   node1:
     build: .
@@ -36,6 +41,39 @@ services:
     command: ["-config", "/etc/dkv/node3.json"]
     volumes:
       - ./configs/docker/node3.json:/etc/dkv/node3.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  node4:
+    build: .
+    command: ["-config", "/etc/dkv/node4.json"]
+    volumes:
+      - ./configs/docker/node4.json:/etc/dkv/node4.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  node5:
+    build: .
+    command: ["-config", "/etc/dkv/node5.json"]
+    volumes:
+      - ./configs/docker/node5.json:/etc/dkv/node5.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  node6:
+    build: .
+    command: ["-config", "/etc/dkv/node6.json"]
+    volumes:
+      - ./configs/docker/node6.json:/etc/dkv/node6.json:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 5s

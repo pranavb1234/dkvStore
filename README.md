@@ -136,8 +136,9 @@ must address that before replicas are used for reads or failover.
 ## Quorums
 
 Phase 6 configures `replication_factor` (`N`), `write_quorum` (`W`), and
-`read_quorum` (`R`); the supplied three-node configuration uses `N=3, W=2,
-R=2`. It validates all values against cluster membership. The useful overlap
+`read_quorum` (`R`); the local three-node configuration uses `N=3, W=2,
+R=2`, while the Docker demo runs six nodes with the same per-key owner count.
+It validates all values against cluster membership. The useful overlap
 condition is `R + W > N`: here, `2 + 2 > 3`, so a successful read and a
 successful write have at least one replica in common while membership is
 static.
@@ -170,9 +171,9 @@ Run the local failure demonstration:
 sh scripts/failure-demo.sh
 ```
 
-With `N=3, W=2, R=2`, one unavailable node can still allow reads and writes
-when the two required owners respond; two unavailable nodes cannot meet either
-quorum. Restarting a process restores only its empty in-memory store—there is
+With `N=3, W=2, R=2`, one unavailable owner can still allow reads and writes
+when the two required owners respond; two unavailable owners for the same key
+cannot meet either quorum. Restarting a process restores only its empty in-memory store—there is
 no automatic recovery, anti-entropy, or replica repair. For this version,
 restart the node with its same config, verify `/health`, then rewrite affected
 keys through the public API to repopulate replicas.
@@ -192,7 +193,7 @@ down or up for the Compose demo. The control is enabled only in the mounted
 Docker configuration; it is a request-availability simulation, not a Docker
 container stop. Use `docker compose stop node3` for an actual stopped process.
 
-The containers use stable Compose DNS names (`node1`, `node2`, `node3`) through
+The containers use stable Compose DNS names (`node1` through `node6`) through
 the mounted files in `configs/docker/`; peers never use `localhost`. From the
 host, verify routing and quorum writes through any exposed node:
 
