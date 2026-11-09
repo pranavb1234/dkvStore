@@ -128,8 +128,13 @@ func (s *server) probePeers(timeout time.Duration) {
 		}
 		cancel()
 		s.healthMu.Lock()
-		s.peerHealth[peer] = err == nil && resp != nil && resp.StatusCode == http.StatusOK
+		previous := s.peerHealth[peer]
+		current := err == nil && resp != nil && resp.StatusCode == http.StatusOK
+		s.peerHealth[peer] = current
 		s.healthMu.Unlock()
+		if previous != current {
+			s.logger.Info("peer health transition", "peer", peer, "healthy", current)
+		}
 	}
 }
 
@@ -143,6 +148,7 @@ func (s *server) publicKeyValue(w http.ResponseWriter, r *http.Request) {
 		emptyKey(w, r)
 		return
 	}
+	s.logger.Info("request received", "method", r.Method, "key", key)
 	primary, ok := s.ring.Primary(key)
 	if !ok {
 		writeError(w, http.StatusServiceUnavailable, "no_primary", "no primary node is configured")
@@ -263,9 +269,11 @@ func (s *server) putValue(w http.ResponseWriter, r *http.Request, key string) {
 	owners := s.ring.Owners(key, s.replicationFactor)
 	acks := s.writeAcks(r.Context(), key, record, owners)
 	if acks < s.writeQuorum {
+		s.logger.Warn("write quorum unavailable", "key", key, "acknowledgements", acks, "required", s.writeQuorum)
 		writeError(w, http.StatusServiceUnavailable, "write_quorum_unavailable", "write quorum could not be reached")
 		return
 	}
+	s.logger.Info("write quorum acknowledged", "key", key, "acknowledgements", acks, "required", s.writeQuorum)
 	writeJSON(w, status, map[string]any{
 		"key": key, "value": *request.Value, "version": record.Version,
 		"replication": "acknowledged", "acknowledgements": acks,
@@ -455,6 +463,7 @@ func (s *server) getValue(w http.ResponseWriter, r *http.Request, key string) {
 		}
 	}
 	if successes < s.readQuorum {
+		s.logger.Warn("read quorum unavailable", "key", key, "responses", successes, "required", s.readQuorum)
 		writeError(w, http.StatusServiceUnavailable, "read_quorum_unavailable", "read quorum could not be reached")
 		return
 	}

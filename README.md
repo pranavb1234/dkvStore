@@ -9,8 +9,10 @@ communication. Local values are lost when the node process restarts.
 
 Each node reads a JSON file. `nodes` is the complete static membership list and
 must contain the local `node_id` exactly once with an `address` identical to
-`listen_addr`. Node IDs use letters, digits, `_`, and `-`; every address must be
-a `host:port` pair with a port from 1 through 65535.
+`advertise_addr` (which defaults to `listen_addr`). This permits a container to
+listen on `0.0.0.0:8080` while advertising `node1:8080`. Node IDs use letters,
+digits, `_`, and `-`; every address must be a `host:port` pair with a port from
+1 through 65535.
 
 ## Run three local nodes
 
@@ -174,6 +176,39 @@ quorum. Restarting a process restores only its empty in-memory store—there is
 no automatic recovery, anti-entropy, or replica repair. For this version,
 restart the node with its same config, verify `/health`, then rewrite affected
 keys through the public API to repopulate replicas.
+
+## Docker Compose demo
+
+Build and start the three-node container cluster:
+
+```sh
+docker compose up --build -d
+docker compose ps
+```
+
+The containers use stable Compose DNS names (`node1`, `node2`, `node3`) through
+the mounted files in `configs/docker/`; peers never use `localhost`. From the
+host, verify routing and quorum writes through any exposed node:
+
+```sh
+curl -i -X PUT http://127.0.0.1:8082/kv/course \
+  -H 'Content-Type: application/json' \
+  -d '{"value":"distributed systems"}'
+curl http://127.0.0.1:8081/kv/course
+curl http://127.0.0.1:8083/health
+```
+
+Inspect persistent container logs and structured routing/quorum/health events:
+
+```sh
+docker compose logs -f node1 node2 node3
+```
+
+Stop the demo (data is intentionally in-memory):
+
+```sh
+docker compose down
+```
 
 ## Test
 

@@ -20,6 +20,7 @@ var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 type Config struct {
 	NodeID              string `json:"node_id"`
 	ListenAddr          string `json:"listen_addr"`
+	AdvertiseAddr       string `json:"advertise_addr"`
 	Nodes               []Peer `json:"nodes"`
 	VirtualNodes        int    `json:"virtual_nodes"`
 	RequestTimeout      string `json:"request_timeout"`
@@ -74,6 +75,9 @@ func (c Config) Validate() error {
 	if err := validAddress(c.ListenAddr); err != nil {
 		return fmt.Errorf("invalid listen_addr: %w", err)
 	}
+	if err := validAddress(c.AdvertiseAddr); err != nil {
+		return fmt.Errorf("invalid advertise_addr: %w", err)
+	}
 	if c.VirtualNodes <= 0 {
 		return fmt.Errorf("virtual_nodes must be positive")
 	}
@@ -127,14 +131,17 @@ func (c Config) Validate() error {
 	if selfAddress == "" {
 		return fmt.Errorf("node_id %q is missing from nodes", c.NodeID)
 	}
-	if selfAddress != c.ListenAddr {
-		return fmt.Errorf("self address %q does not match listen_addr %q", selfAddress, c.ListenAddr)
+	if selfAddress != c.AdvertiseAddr {
+		return fmt.Errorf("self address %q does not match advertise_addr %q", selfAddress, c.AdvertiseAddr)
 	}
 	return nil
 }
 
 // ApplyDefaults sets quorum values for omitted JSON fields.
 func (c *Config) ApplyDefaults() {
+	if c.AdvertiseAddr == "" {
+		c.AdvertiseAddr = c.ListenAddr
+	}
 	if c.ReplicationFactor == 0 {
 		c.ReplicationFactor = 3
 	}
