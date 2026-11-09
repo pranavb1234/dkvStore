@@ -45,20 +45,23 @@ func TestKeyValueAPI(t *testing.T) {
 	handler := testHandler()
 
 	response := request(t, handler, http.MethodPut, "/kv/course", `{"value":"go"}`)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("create status = %d, want %d", response.Code, http.StatusCreated)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("create status = %d, want %d", response.Code, http.StatusAccepted)
 	}
-	assertJSON(t, response.Body.String(), map[string]any{"key": "course", "value": "go"})
+	assertJSON(t, response.Body.String(), map[string]any{
+		"key": "course", "value": "go", "version": float64(1),
+		"replication": "partial", "replica": "",
+	})
 
 	response = request(t, handler, http.MethodPut, "/kv/course", `{"value":"systems"}`)
-	if response.Code != http.StatusOK {
-		t.Fatalf("replace status = %d, want %d", response.Code, http.StatusOK)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("replace status = %d, want %d", response.Code, http.StatusAccepted)
 	}
 	response = request(t, handler, http.MethodGet, "/kv/course", "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("get status = %d, want %d", response.Code, http.StatusOK)
 	}
-	assertJSON(t, response.Body.String(), map[string]any{"key": "course", "value": "systems"})
+	assertJSON(t, response.Body.String(), map[string]any{"key": "course", "value": "systems", "version": float64(2)})
 
 	response = request(t, handler, http.MethodDelete, "/kv/course", "")
 	if response.Code != http.StatusOK {

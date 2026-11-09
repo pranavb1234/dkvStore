@@ -107,6 +107,30 @@ with `primary_unreachable`; a peer deadline produces `504 Gateway Timeout`
 with `primary_timeout`. Logs include the local node ID and `routing_target`,
 but never a stored value.
 
+## Replication
+
+The Phase 5 replication factor is two: the primary plus the next distinct
+physical owner returned by the ring. The primary assigns a monotonically
+increasing unsigned version for each key, stores the record locally, then sends
+`PUT /internal/replicate/kv/{key}` directly to that replica. The internal
+endpoint requires an internal-request header, applies no routing, and never
+initiates another replication request.
+
+Replica application is idempotent: repeating the same version and value is a
+successful no-op. A stale version, or a different value at an existing version,
+is rejected. A successful replicated write returns `201 Created` or `200 OK`
+with `"replication":"acknowledged"`. If the primary stored the write but its
+replica could not acknowledge it, the response is `202 Accepted` with
+`"replication":"partial"`; the value is present only on the primary at that
+point.
+
+There is an unavoidable failure window between the primary write and replica
+acknowledgement. A primary crash in that window loses the partially replicated
+value because storage is in-memory and Phase 5 has no retry queue, hinted
+handoff, quorum, read repair, or automatic rebalancing. Deletes are still
+primary-local in this phase and are not replicated as tombstones; future work
+must address that before replicas are used for reads or failover.
+
 ## Test
 
 ```sh

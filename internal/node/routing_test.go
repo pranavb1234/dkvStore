@@ -43,8 +43,9 @@ func TestRoutesRequestsFromEveryEntryNodeToPrimary(t *testing.T) {
 	if err != nil || value != "from-node-c" {
 		t.Fatalf("primary %q value = (%q, %v)", primary, value, err)
 	}
+	owners := ownersFor(t, cluster.nodes, key, 2)
 	for _, nodeID := range cluster.nodeIDs {
-		if nodeID == primary {
+		if nodeID == primary || nodeID == owners[1] {
 			continue
 		}
 		if _, err := cluster.stores[nodeID].Get(key); !errors.Is(err, store.ErrNotFound) {
@@ -69,6 +70,20 @@ func TestRoutesRequestsFromEveryEntryNodeToPrimary(t *testing.T) {
 			t.Fatalf("GET through %s = (%d, %q)", nodeID, response.StatusCode, body.Value)
 		}
 	}
+}
+
+func ownersFor(t *testing.T, nodes []config.Peer, key string, count int) []string {
+	t.Helper()
+	hashRing, err := ring.New(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, peer := range nodes {
+		if err := hashRing.Add(peer.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return hashRing.Owners(key, count)
 }
 
 func TestReturnsUsefulErrorWhenPrimaryIsUnavailable(t *testing.T) {

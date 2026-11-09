@@ -38,6 +38,28 @@ func TestStoreRejectsOversizedValue(t *testing.T) {
 	}
 }
 
+func TestStoreAppliesReplicaVersionsIdempotently(t *testing.T) {
+	store := New(16)
+	applied, err := store.Apply("key", "first", 2)
+	if err != nil || !applied {
+		t.Fatalf("Apply newer = (%v, %v), want (true, nil)", applied, err)
+	}
+	applied, err = store.Apply("key", "first", 2)
+	if err != nil || applied {
+		t.Fatalf("Apply duplicate = (%v, %v), want (false, nil)", applied, err)
+	}
+	if _, err := store.Apply("key", "stale", 1); err != ErrStaleVersion {
+		t.Fatalf("Apply stale error = %v, want %v", err, ErrStaleVersion)
+	}
+	if _, err := store.Apply("key", "conflict", 2); err != ErrVersionConflict {
+		t.Fatalf("Apply conflict error = %v, want %v", err, ErrVersionConflict)
+	}
+	record, err := store.GetRecord("key")
+	if err != nil || record != (Record{Value: "first", Version: 2}) {
+		t.Fatalf("GetRecord = (%+v, %v)", record, err)
+	}
+}
+
 func TestStoreConcurrentReadsAndWrites(t *testing.T) {
 	store := New(1024)
 	const workers = 16

@@ -2,6 +2,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 )
 
 const routeHopHeader = "X-DKV-Route-Hop"
+const replicationHeader = "X-DKV-Replication"
 
 // NewHandler builds a node handler from validated static cluster configuration.
 func NewHandler(cfg config.Config, logger *slog.Logger, values *store.Store) (http.Handler, error) {
@@ -66,6 +68,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/kv", emptyKey)
 	mux.HandleFunc("/kv/", s.publicKeyValue)
 	mux.HandleFunc("/internal/route/kv/", s.internalKeyValue)
+	mux.HandleFunc("/internal/replicate/kv/", s.internalReplication)
 	return mux
 }
 
@@ -159,7 +162,7 @@ func (s *server) forwardToPrimary(w http.ResponseWriter, r *http.Request, key, p
 func (s *server) serveLocal(w http.ResponseWriter, r *http.Request, key string) {
 	switch r.Method {
 	case http.MethodPut:
-		putValue(w, r, key, s.values)
+		s.putValue(w, r, key)
 	case http.MethodGet:
 		getValue(w, key, s.values)
 	case http.MethodDelete:
@@ -169,7 +172,7 @@ func (s *server) serveLocal(w http.ResponseWriter, r *http.Request, key string) 
 	}
 }
 
-func putValue(w http.ResponseWriter, r *http.Request, key string, values *store.Store) {
+func (s *server) putValue(w http.ResponseWriter, r *http.Request, key string) {
 	r.Body = http.MaxBytesReader(w, r.Body, store.DefaultMaxValueBytes+1024)
 	defer r.Body.Close()
 
@@ -191,7 +194,7 @@ func putValue(w http.ResponseWriter, r *http.Request, key string, values *store.
 		return
 	}
 
-	created, err := values.Put(key, *request.Value)
+	record, created, err := s.values.PutNext(key, *request.Value)
 	if errors.Is(err, store.ErrValueTooLarge) {
 		writeError(w, http.StatusRequestEntityTooLarge, "value_too_large", "value exceeds 1048576 bytes")
 		return
@@ -204,11 +207,114 @@ func putValue(w http.ResponseWriter, r *http.Request, key string, values *store.
 	if created {
 		status = http.StatusCreated
 	}
-	writeJSON(w, status, map[string]string{"key": key, "value": *request.Value})
+	owners := s.ring.Owners(key, 2)
+	if len(owners) < 2 {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"key": key, "value": *request.Value, "version": record.Version,
+			"replication": "partial", "replica": "",
+		})
+		return
+	}
+	replica := owners[1]
+	if err := s.replicate(r.Context(), key, record, replica); err != nil {
+		s.logger.Warn("replication failed", "key", key, "replica_target", replica, "error", err)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"key": key, "value": *request.Value, "version": record.Version,
+			"replication": "partial", "replica": replica,
+		})
+		return
+	}
+	writeJSON(w, status, map[string]any{
+		"key": key, "value": *request.Value, "version": record.Version,
+		"replication": "acknowledged", "replica": replica,
+	})
+}
+
+func (s *server) replicate(parent context.Context, key string, record store.Record, replica string) error {
+	address, exists := s.peers[replica]
+	if !exists {
+		return fmt.Errorf("replica address is not configured")
+	}
+	body, err := json.Marshal(struct {
+		Value   string `json:"value"`
+		Version uint64 `json:"version"`
+	}{Value: record.Value, Version: record.Version})
+	if err != nil {
+		return fmt.Errorf("encode replication request: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(parent, s.timeout)
+	defer cancel()
+	target := "http://" + address + "/internal/replicate/kv/" + url.PathEscape(key)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create replication request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(replicationHeader, "1")
+	response, err := s.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("send replication request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("replica returned status %d", response.StatusCode)
+	}
+	return nil
+}
+
+func (s *server) internalReplication(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, "/internal/replicate/kv/")
+	if key == "" {
+		emptyKey(w, r)
+		return
+	}
+	if r.Method != http.MethodPut {
+		methodNotAllowed(w, http.MethodPut)
+		return
+	}
+	if r.Header.Get(replicationHeader) != "1" {
+		writeError(w, http.StatusForbidden, "internal_only", "replication endpoint requires an internal request")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, store.DefaultMaxValueBytes+1024)
+	defer r.Body.Close()
+	var request struct {
+		Value   *string `json:"value"`
+		Version *uint64 `json:"version"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeJSONDecodeError(w, err)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must contain one JSON object")
+		return
+	}
+	if request.Value == nil || request.Version == nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "replication requires value and version")
+		return
+	}
+	applied, err := s.values.Apply(key, *request.Value, *request.Version)
+	switch {
+	case errors.Is(err, store.ErrValueTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "value_too_large", "value exceeds 1048576 bytes")
+	case errors.Is(err, store.ErrStaleVersion):
+		writeError(w, http.StatusConflict, "stale_version", "replica has a newer version")
+	case errors.Is(err, store.ErrVersionConflict):
+		writeError(w, http.StatusConflict, "version_conflict", "replica has a different value at this version")
+	case errors.Is(err, store.ErrInvalidVersion):
+		writeError(w, http.StatusBadRequest, "invalid_version", "version must be positive")
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not apply replication")
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"key": key, "version": *request.Version, "applied": applied})
+	}
 }
 
 func getValue(w http.ResponseWriter, key string, values *store.Store) {
-	value, err := values.Get(key)
+	record, err := values.GetRecord(key)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "key_not_found", "key does not exist")
 		return
@@ -217,7 +323,7 @@ func getValue(w http.ResponseWriter, key string, values *store.Store) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "could not read value")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"key": key, "value": value})
+	writeJSON(w, http.StatusOK, map[string]any{"key": key, "value": record.Value, "version": record.Version})
 }
 
 func deleteValue(w http.ResponseWriter, key string, values *store.Store) {
