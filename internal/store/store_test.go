@@ -40,18 +40,18 @@ func TestStoreRejectsOversizedValue(t *testing.T) {
 
 func TestStoreAppliesReplicaVersionsIdempotently(t *testing.T) {
 	store := New(16)
-	applied, err := store.Apply("key", "first", 2)
+	applied, err := store.Apply("key", "first", 2, false)
 	if err != nil || !applied {
 		t.Fatalf("Apply newer = (%v, %v), want (true, nil)", applied, err)
 	}
-	applied, err = store.Apply("key", "first", 2)
+	applied, err = store.Apply("key", "first", 2, false)
 	if err != nil || applied {
 		t.Fatalf("Apply duplicate = (%v, %v), want (false, nil)", applied, err)
 	}
-	if _, err := store.Apply("key", "stale", 1); err != ErrStaleVersion {
+	if _, err := store.Apply("key", "stale", 1, false); err != ErrStaleVersion {
 		t.Fatalf("Apply stale error = %v, want %v", err, ErrStaleVersion)
 	}
-	if _, err := store.Apply("key", "conflict", 2); err != ErrVersionConflict {
+	if _, err := store.Apply("key", "conflict", 2, false); err != ErrVersionConflict {
 		t.Fatalf("Apply conflict error = %v, want %v", err, ErrVersionConflict)
 	}
 	record, err := store.GetRecord("key")

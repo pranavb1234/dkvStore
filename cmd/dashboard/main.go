@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pranavb1234/dkvStore/internal/ring"
@@ -24,6 +25,7 @@ type dashboard struct {
 	nodes  map[string]string
 	client *http.Client
 	logger *slog.Logger
+	next   atomic.Uint64
 }
 
 func main() {
@@ -107,9 +109,13 @@ func (d *dashboard) getJSON(target string) (json.RawMessage, error) {
 
 func (d *dashboard) kvHandler(w http.ResponseWriter, r *http.Request) {
 	node, key := r.URL.Query().Get("node"), r.URL.Query().Get("key")
+	if node == "" || node == "gateway" {
+		ids := []string{"node1", "node2", "node3"}
+		node = ids[d.next.Add(1)%uint64(len(ids))]
+	}
 	base, ok := d.nodes[node]
 	if !ok || key == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node and key are required"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "key is required"})
 		return
 	}
 	method, body := r.Method, r.Body

@@ -71,7 +71,10 @@ func TestKeyValueAPI(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, want %d", response.Code, http.StatusOK)
 	}
-	assertJSON(t, response.Body.String(), map[string]any{"key": "course", "deleted": true})
+	var deleted map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &deleted); err != nil || deleted["deleted"] != true {
+		t.Fatalf("delete response = %q, error = %v", response.Body.String(), err)
+	}
 	response = request(t, handler, http.MethodGet, "/kv/course", "")
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("missing get status = %d, want %d", response.Code, http.StatusNotFound)

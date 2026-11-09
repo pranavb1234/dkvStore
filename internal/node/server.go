@@ -211,15 +211,8 @@ func (s *server) publicKeyValue(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info("request received", "method", r.Method, "key", key)
 	s.requests.Add(1)
-	primary, ok := s.ring.Primary(key)
-	if !ok {
-		writeError(w, http.StatusServiceUnavailable, "no_primary", "no primary node is configured")
-		return
-	}
-	if primary != s.nodeID {
-		s.forwardToPrimary(w, r, key, primary)
-		return
-	}
+	// Any healthy owner may coordinate the quorum operation. The ring still
+	// provides deterministic owner order, but a failed primary is not a gate.
 	s.serveLocal(w, r, key)
 }
 
@@ -288,7 +281,7 @@ func (s *server) serveLocal(w http.ResponseWriter, r *http.Request, key string) 
 	case http.MethodGet:
 		s.getValue(w, r, key)
 	case http.MethodDelete:
-		deleteValue(w, key, s.values)
+		s.deleteValue(w, r, key)
 	default:
 		methodNotAllowed(w, "GET, PUT, DELETE")
 	}
@@ -348,18 +341,25 @@ func (s *server) putValue(w http.ResponseWriter, r *http.Request, key string) {
 func (s *server) writeAcks(parent context.Context, key string, record store.Record, owners []string) int {
 	ctx, cancel := context.WithTimeout(parent, s.timeout)
 	defer cancel()
-	acks := 1
-	results := make(chan bool, len(owners)-1)
-	for _, peer := range owners[1:] {
+	acks := 0
+	pending := 0
+	for _, peer := range owners {
+		if peer == s.nodeID {
+			acks = 1
+		} else {
+			pending++
+		}
+	}
+	results := make(chan bool, pending)
+	for _, peer := range owners {
+		if peer == s.nodeID {
+			continue
+		}
 		go func(peer string) { results <- s.replicate(ctx, key, record, peer) == nil }(peer)
 	}
-	for pending := len(owners) - 1; pending > 0; pending-- {
+	for ; pending > 0; pending-- {
 		if <-results {
 			acks++
-			if acks >= s.writeQuorum {
-				cancel()
-				return acks
-			}
 		}
 	}
 	return acks
@@ -373,7 +373,8 @@ func (s *server) replicate(parent context.Context, key string, record store.Reco
 	body, err := json.Marshal(struct {
 		Value   string `json:"value"`
 		Version uint64 `json:"version"`
-	}{Value: record.Value, Version: record.Version})
+		Deleted bool   `json:"deleted"`
+	}{Value: record.Value, Version: record.Version, Deleted: record.Deleted})
 	if err != nil {
 		return fmt.Errorf("encode replication request: %w", err)
 	}
@@ -416,6 +417,7 @@ func (s *server) internalReplication(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Value   *string `json:"value"`
 		Version *uint64 `json:"version"`
+		Deleted bool    `json:"deleted"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -431,7 +433,7 @@ func (s *server) internalReplication(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_json", "replication requires value and version")
 		return
 	}
-	applied, err := s.values.Apply(key, *request.Value, *request.Version)
+	applied, err := s.values.Apply(key, *request.Value, *request.Version, request.Deleted)
 	switch {
 	case errors.Is(err, store.ErrValueTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "value_too_large", "value exceeds 1048576 bytes")
@@ -467,7 +469,7 @@ func (s *server) internalRead(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "could not read value")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"found": true, "value": record.Value, "version": record.Version})
+	writeJSON(w, http.StatusOK, map[string]any{"found": true, "value": record.Value, "version": record.Version, "deleted": record.Deleted})
 }
 
 func (s *server) getValue(w http.ResponseWriter, r *http.Request, key string) {
@@ -505,12 +507,13 @@ func (s *server) getValue(w http.ResponseWriter, r *http.Request, key string) {
 				Found   bool   `json:"found"`
 				Value   string `json:"value"`
 				Version uint64 `json:"version"`
+				Deleted bool   `json:"deleted"`
 			}
 			if json.NewDecoder(resp.Body).Decode(&body) != nil {
 				results <- result{}
 				return
 			}
-			results <- result{record: store.Record{Value: body.Value, Version: body.Version}, found: body.Found, ok: true}
+			results <- result{record: store.Record{Value: body.Value, Version: body.Version, Deleted: body.Deleted}, found: body.Found, ok: true}
 		}(peer)
 	}
 	successes := 0
@@ -533,19 +536,26 @@ func (s *server) getValue(w http.ResponseWriter, r *http.Request, key string) {
 		writeError(w, http.StatusServiceUnavailable, "read_quorum_unavailable", "read quorum could not be reached")
 		return
 	}
-	if !found {
+	if !found || best.Deleted {
 		writeError(w, http.StatusNotFound, "key_not_found", "key does not exist")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"key": key, "value": best.Value, "version": best.Version})
 }
 
-func deleteValue(w http.ResponseWriter, key string, values *store.Store) {
-	if !values.Delete(key) {
+func (s *server) deleteValue(w http.ResponseWriter, r *http.Request, key string) {
+	record, existed := s.values.DeleteNext(key)
+	if !existed {
 		writeError(w, http.StatusNotFound, "key_not_found", "key does not exist")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"key": key, "deleted": true})
+	acks := s.writeAcks(r.Context(), key, record, s.ring.Owners(key, s.replicationFactor))
+	if acks < s.writeQuorum {
+		s.writeQuorumFails.Add(1)
+		writeError(w, http.StatusServiceUnavailable, "write_quorum_unavailable", "delete quorum could not be reached")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"key": key, "deleted": true, "version": record.Version, "acknowledgements": acks})
 }
 
 func writeJSONDecodeError(w http.ResponseWriter, err error) {

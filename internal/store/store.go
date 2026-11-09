@@ -33,6 +33,7 @@ type Store struct {
 type Record struct {
 	Value   string
 	Version uint64
+	Deleted bool
 }
 
 // New creates an empty Store that accepts values up to maxValueBytes.
@@ -87,7 +88,7 @@ func (s *Store) GetRecord(key string) (Record, error) {
 // Apply stores a primary-assigned version on a replica. An identical repeat is
 // successful but reports applied=false; stale or conflicting records are not
 // written.
-func (s *Store) Apply(key, value string, version uint64) (bool, error) {
+func (s *Store) Apply(key, value string, version uint64, deleted bool) (bool, error) {
 	if len(value) > s.maxValueBytes {
 		return false, ErrValueTooLarge
 	}
@@ -102,14 +103,25 @@ func (s *Store) Apply(key, value string, version uint64) (bool, error) {
 		switch {
 		case current.Version > version:
 			return false, ErrStaleVersion
-		case current.Version == version && current.Value == value:
+		case current.Version == version && current.Value == value && current.Deleted == deleted:
 			return false, nil
 		case current.Version == version:
 			return false, ErrVersionConflict
 		}
 	}
-	s.values[key] = Record{Value: value, Version: version}
+	s.values[key] = Record{Value: value, Version: version, Deleted: deleted}
 	return true, nil
+}
+
+// DeleteNext writes a versioned tombstone. Tombstones must be replicated so an
+// older replica cannot resurrect a deleted value.
+func (s *Store) DeleteNext(key string) (Record, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, exists := s.values[key]
+	record := Record{Version: current.Version + 1, Deleted: true}
+	s.values[key] = record
+	return record, exists && !current.Deleted
 }
 
 // Delete removes key and reports whether it existed.

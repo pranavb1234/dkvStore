@@ -14,8 +14,6 @@ services:
     command: ["-config", "/etc/dkv/node1.json"]
     volumes:
       - ./configs/docker/node1.json:/etc/dkv/node1.json:ro
-    ports:
-      - "8081:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 5s
@@ -27,8 +25,6 @@ services:
     command: ["-config", "/etc/dkv/node2.json"]
     volumes:
       - ./configs/docker/node2.json:/etc/dkv/node2.json:ro
-    ports:
-      - "8082:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 5s
@@ -40,8 +36,6 @@ services:
     command: ["-config", "/etc/dkv/node3.json"]
     volumes:
       - ./configs/docker/node3.json:/etc/dkv/node3.json:ro
-    ports:
-      - "8083:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 5s

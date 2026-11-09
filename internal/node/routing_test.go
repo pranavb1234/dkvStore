@@ -114,10 +114,10 @@ func TestReturnsUsefulErrorWhenPrimaryIsUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusBadGateway)
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusServiceUnavailable)
 	}
-	assertErrorCode(t, response.Body, "primary_unreachable")
+	assertErrorCode(t, response.Body, "read_quorum_unavailable")
 }
 
 func TestInternalRouteRejectsMissingHopHeader(t *testing.T) {
