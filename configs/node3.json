@@ -3,6 +3,11 @@
   "listen_addr": "127.0.0.1:8083",
 	"virtual_nodes": 64,
 	"request_timeout": "750ms",
+	"replication_factor": 3,
+	"write_quorum": 2,
+	"read_quorum": 2,
+	"health_check_interval": "1s",
+	"health_check_timeout": "250ms",
   "nodes": [
     { "id": "node1", "address": "127.0.0.1:8081" },
     { "id": "node2", "address": "127.0.0.1:8082" },

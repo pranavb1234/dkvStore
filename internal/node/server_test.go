@@ -26,8 +26,12 @@ func TestHealth(t *testing.T) {
 	if contentType := recorder.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
 		t.Fatalf("content type = %q, want application/json", contentType)
 	}
-	if body := recorder.Body.String(); body != "{\"node_id\":\"node-1\",\"status\":\"ok\"}\n" {
-		t.Fatalf("body = %q", body)
+	var body struct {
+		NodeID string `json:"node_id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body.NodeID != "node-1" || body.Status != "ok" {
+		t.Fatalf("health body = %q, error = %v", recorder.Body.String(), err)
 	}
 }
 

@@ -155,6 +155,26 @@ subset of replicas, versions are primary-local counters, membership is static,
 and there is no durable recovery, election, anti-entropy, or conflict-free
 multi-writer policy.
 
+## Failure handling and recovery
+
+Each node probes peers at `health_check_interval` with `health_check_timeout`.
+`GET /health` reports the latest peer status; a failed probe marks a peer
+unhealthy but never removes it from the ring or reduces quorum requirements.
+Requests still use their bounded request timeout and return quorum errors.
+
+Run the local failure demonstration:
+
+```sh
+sh scripts/failure-demo.sh
+```
+
+With `N=3, W=2, R=2`, one unavailable node can still allow reads and writes
+when the two required owners respond; two unavailable nodes cannot meet either
+quorum. Restarting a process restores only its empty in-memory store—there is
+no automatic recovery, anti-entropy, or replica repair. For this version,
+restart the node with its same config, verify `/health`, then rewrite affected
+keys through the public API to repopulate replicas.
+
 ## Test
 
 ```sh

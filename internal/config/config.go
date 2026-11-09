@@ -18,14 +18,16 @@ var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 // Config identifies this process and the complete static cluster membership.
 // Nodes must include the local node exactly once.
 type Config struct {
-	NodeID            string `json:"node_id"`
-	ListenAddr        string `json:"listen_addr"`
-	Nodes             []Peer `json:"nodes"`
-	VirtualNodes      int    `json:"virtual_nodes"`
-	RequestTimeout    string `json:"request_timeout"`
-	ReplicationFactor int    `json:"replication_factor"`
-	WriteQuorum       int    `json:"write_quorum"`
-	ReadQuorum        int    `json:"read_quorum"`
+	NodeID              string `json:"node_id"`
+	ListenAddr          string `json:"listen_addr"`
+	Nodes               []Peer `json:"nodes"`
+	VirtualNodes        int    `json:"virtual_nodes"`
+	RequestTimeout      string `json:"request_timeout"`
+	ReplicationFactor   int    `json:"replication_factor"`
+	WriteQuorum         int    `json:"write_quorum"`
+	ReadQuorum          int    `json:"read_quorum"`
+	HealthCheckInterval string `json:"health_check_interval"`
+	HealthCheckTimeout  string `json:"health_check_timeout"`
 }
 
 // Peer is one node's stable identity and HTTP listen address.
@@ -77,6 +79,14 @@ func (c Config) Validate() error {
 	}
 	if _, err := c.Timeout(); err != nil {
 		return fmt.Errorf("invalid request_timeout: %w", err)
+	}
+	interval, intervalErr := time.ParseDuration(c.HealthCheckInterval)
+	if intervalErr != nil || interval <= 0 {
+		return fmt.Errorf("invalid health_check_interval")
+	}
+	healthTimeout, healthErr := time.ParseDuration(c.HealthCheckTimeout)
+	if healthErr != nil || healthTimeout <= 0 {
+		return fmt.Errorf("invalid health_check_timeout")
 	}
 	if len(c.Nodes) == 0 {
 		return fmt.Errorf("nodes must contain the complete membership list")
@@ -133,6 +143,12 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.ReadQuorum == 0 {
 		c.ReadQuorum = 2
+	}
+	if c.HealthCheckInterval == "" {
+		c.HealthCheckInterval = "1s"
+	}
+	if c.HealthCheckTimeout == "" {
+		c.HealthCheckTimeout = "250ms"
 	}
 }
 

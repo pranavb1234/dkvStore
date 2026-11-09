@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pranavb1234/dkvStore/internal/config"
@@ -52,7 +53,16 @@ func NewHandler(cfg config.Config, logger *slog.Logger, values *store.Store) (ht
 		replicationFactor: cfg.ReplicationFactor,
 		writeQuorum:       cfg.WriteQuorum,
 		readQuorum:        cfg.ReadQuorum,
+		peerHealth:        make(map[string]bool),
 	}
+	for _, peer := range cfg.Nodes {
+		if peer.ID != cfg.NodeID {
+			server.peerHealth[peer.ID] = true
+		}
+	}
+	interval, _ := time.ParseDuration(cfg.HealthCheckInterval)
+	healthTimeout, _ := time.ParseDuration(cfg.HealthCheckTimeout)
+	go server.monitorPeers(interval, healthTimeout)
 	return server.routes(), nil
 }
 
@@ -67,6 +77,8 @@ type server struct {
 	replicationFactor int
 	writeQuorum       int
 	readQuorum        int
+	healthMu          sync.RWMutex
+	peerHealth        map[string]bool
 }
 
 func (s *server) routes() http.Handler {
@@ -85,7 +97,40 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"node_id": s.nodeID, "status": "ok"})
+	s.healthMu.RLock()
+	peers := make(map[string]bool, len(s.peerHealth))
+	for id, healthy := range s.peerHealth {
+		peers[id] = healthy
+	}
+	s.healthMu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]any{"node_id": s.nodeID, "status": "ok", "peers": peers})
+}
+
+func (s *server) monitorPeers(interval, timeout time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		s.probePeers(timeout)
+		<-ticker.C
+	}
+}
+
+func (s *server) probePeers(timeout time.Duration) {
+	for peer, address := range s.peers {
+		if peer == s.nodeID {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/health", nil)
+		resp, err := (&http.Client{Timeout: timeout}).Do(req)
+		if resp != nil {
+			resp.Body.Close()
+		}
+		cancel()
+		s.healthMu.Lock()
+		s.peerHealth[peer] = err == nil && resp != nil && resp.StatusCode == http.StatusOK
+		s.healthMu.Unlock()
+	}
 }
 
 func emptyKey(w http.ResponseWriter, _ *http.Request) {
