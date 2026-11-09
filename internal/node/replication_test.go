@@ -30,17 +30,17 @@ func TestReplicatesPrimaryWriteAndHandlesDuplicateAndStaleVersions(t *testing.T)
 		t.Fatalf("write status = %d, want %d", response.StatusCode, http.StatusCreated)
 	}
 	var writeBody struct {
-		Version     uint64 `json:"version"`
-		Replication string `json:"replication"`
-		Replica     string `json:"replica"`
+		Version          uint64 `json:"version"`
+		Replication      string `json:"replication"`
+		Acknowledgements int    `json:"acknowledgements"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&writeBody); err != nil {
 		response.Body.Close()
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if writeBody.Version != 1 || writeBody.Replication != "acknowledged" || writeBody.Replica != replica {
-		t.Fatalf("write response = %+v, want version 1 acknowledged by %q", writeBody, replica)
+	if writeBody.Version != 1 || writeBody.Replication != "acknowledged" || writeBody.Acknowledgements < 2 {
+		t.Fatalf("write response = %+v, want version 1 acknowledged", writeBody)
 	}
 	for _, nodeID := range []string{primary, replica} {
 		record, err := cluster.stores[nodeID].GetRecord(key)
@@ -95,10 +95,11 @@ func TestReplicatesPrimaryWriteAndHandlesDuplicateAndStaleVersions(t *testing.T)
 func TestWriteIsPartialWhenReplicaIsUnavailable(t *testing.T) {
 	listener := listen(t)
 	config := config.Config{
-		NodeID:         "node-a",
-		ListenAddr:     listener.Addr().String(),
-		VirtualNodes:   8,
-		RequestTimeout: "100ms",
+		NodeID:            "node-a",
+		ListenAddr:        listener.Addr().String(),
+		VirtualNodes:      8,
+		RequestTimeout:    "100ms",
+		ReplicationFactor: 2, WriteQuorum: 2, ReadQuorum: 2,
 		Nodes: []config.Peer{
 			{ID: "node-a", Address: listener.Addr().String()},
 			{ID: "node-b", Address: "127.0.0.1:1"},
@@ -121,17 +122,19 @@ func TestWriteIsPartialWhenReplicaIsUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusAccepted)
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusServiceUnavailable)
 	}
 	var body struct {
-		Replication string `json:"replication"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Replication != "partial" {
-		t.Fatalf("replication = %q, want partial", body.Replication)
+	if body.Error.Code != "write_quorum_unavailable" {
+		t.Fatalf("error = %q, want write_quorum_unavailable", body.Error.Code)
 	}
 	record, err := values.GetRecord(key)
 	if err != nil || record != (store.Record{Value: "kept-by-primary", Version: 1}) {

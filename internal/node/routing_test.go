@@ -43,9 +43,9 @@ func TestRoutesRequestsFromEveryEntryNodeToPrimary(t *testing.T) {
 	if err != nil || value != "from-node-c" {
 		t.Fatalf("primary %q value = (%q, %v)", primary, value, err)
 	}
-	owners := ownersFor(t, cluster.nodes, key, 2)
+	owners := ownersFor(t, cluster.nodes, key, 3)
 	for _, nodeID := range cluster.nodeIDs {
-		if nodeID == primary || nodeID == owners[1] {
+		if nodeID == primary || nodeID == owners[1] || nodeID == owners[2] {
 			continue
 		}
 		if _, err := cluster.stores[nodeID].Get(key); !errors.Is(err, store.ErrNotFound) {
@@ -90,10 +90,11 @@ func TestReturnsUsefulErrorWhenPrimaryIsUnavailable(t *testing.T) {
 	listener := listen(t)
 	defer listener.Close()
 	config := config.Config{
-		NodeID:         "node-b",
-		ListenAddr:     listener.Addr().String(),
-		VirtualNodes:   8,
-		RequestTimeout: "100ms",
+		NodeID:            "node-b",
+		ListenAddr:        listener.Addr().String(),
+		VirtualNodes:      8,
+		RequestTimeout:    "100ms",
+		ReplicationFactor: 2, WriteQuorum: 2, ReadQuorum: 2,
 		Nodes: []config.Peer{
 			{ID: "node-a", Address: "127.0.0.1:1"},
 			{ID: "node-b", Address: listener.Addr().String()},
@@ -154,11 +155,12 @@ func startTestCluster(t *testing.T) *testCluster {
 	for _, nodeID := range nodeIDs {
 		values := store.New(store.DefaultMaxValueBytes)
 		handler, err := NewHandler(config.Config{
-			NodeID:         nodeID,
-			ListenAddr:     listeners[nodeID].Addr().String(),
-			VirtualNodes:   32,
-			RequestTimeout: "500ms",
-			Nodes:          nodes,
+			NodeID:            nodeID,
+			ListenAddr:        listeners[nodeID].Addr().String(),
+			VirtualNodes:      32,
+			RequestTimeout:    "500ms",
+			ReplicationFactor: 3, WriteQuorum: 2, ReadQuorum: 2,
+			Nodes: nodes,
 		}, testLogger(), values)
 		if err != nil {
 			t.Fatal(err)

@@ -18,11 +18,14 @@ var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 // Config identifies this process and the complete static cluster membership.
 // Nodes must include the local node exactly once.
 type Config struct {
-	NodeID         string `json:"node_id"`
-	ListenAddr     string `json:"listen_addr"`
-	Nodes          []Peer `json:"nodes"`
-	VirtualNodes   int    `json:"virtual_nodes"`
-	RequestTimeout string `json:"request_timeout"`
+	NodeID            string `json:"node_id"`
+	ListenAddr        string `json:"listen_addr"`
+	Nodes             []Peer `json:"nodes"`
+	VirtualNodes      int    `json:"virtual_nodes"`
+	RequestTimeout    string `json:"request_timeout"`
+	ReplicationFactor int    `json:"replication_factor"`
+	WriteQuorum       int    `json:"write_quorum"`
+	ReadQuorum        int    `json:"read_quorum"`
 }
 
 // Peer is one node's stable identity and HTTP listen address.
@@ -52,6 +55,7 @@ func Load(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
+	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -61,6 +65,7 @@ func Load(path string) (Config, error) {
 // Validate verifies identities, addresses, duplicate entries, and the local
 // node's matching membership entry.
 func (c Config) Validate() error {
+	c.ApplyDefaults()
 	if !validNodeID(c.NodeID) {
 		return fmt.Errorf("invalid node_id %q", c.NodeID)
 	}
@@ -75,6 +80,15 @@ func (c Config) Validate() error {
 	}
 	if len(c.Nodes) == 0 {
 		return fmt.Errorf("nodes must contain the complete membership list")
+	}
+	if c.ReplicationFactor < 1 || c.ReplicationFactor > len(c.Nodes) {
+		return fmt.Errorf("replication_factor must be between 1 and %d", len(c.Nodes))
+	}
+	if c.WriteQuorum < 1 || c.WriteQuorum > c.ReplicationFactor {
+		return fmt.Errorf("write_quorum must be between 1 and replication_factor")
+	}
+	if c.ReadQuorum < 1 || c.ReadQuorum > c.ReplicationFactor {
+		return fmt.Errorf("read_quorum must be between 1 and replication_factor")
 	}
 
 	ids := make(map[string]struct{}, len(c.Nodes))
@@ -107,6 +121,19 @@ func (c Config) Validate() error {
 		return fmt.Errorf("self address %q does not match listen_addr %q", selfAddress, c.ListenAddr)
 	}
 	return nil
+}
+
+// ApplyDefaults sets quorum values for omitted JSON fields.
+func (c *Config) ApplyDefaults() {
+	if c.ReplicationFactor == 0 {
+		c.ReplicationFactor = 3
+	}
+	if c.WriteQuorum == 0 {
+		c.WriteQuorum = 2
+	}
+	if c.ReadQuorum == 0 {
+		c.ReadQuorum = 2
+	}
 }
 
 // Timeout returns the configured bounded deadline for peer HTTP requests.

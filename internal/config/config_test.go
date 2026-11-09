@@ -8,10 +8,11 @@ import (
 
 func TestConfigValidate(t *testing.T) {
 	valid := Config{
-		NodeID:         "node-1",
-		ListenAddr:     "127.0.0.1:8081",
-		VirtualNodes:   8,
-		RequestTimeout: "500ms",
+		NodeID:            "node-1",
+		ListenAddr:        "127.0.0.1:8081",
+		VirtualNodes:      8,
+		RequestTimeout:    "500ms",
+		ReplicationFactor: 2, WriteQuorum: 2, ReadQuorum: 2,
 		Nodes: []Peer{
 			{ID: "node-1", Address: "127.0.0.1:8081"},
 			{ID: "node-2", Address: "127.0.0.1:8082"},

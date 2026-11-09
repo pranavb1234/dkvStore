@@ -24,6 +24,7 @@ const replicationHeader = "X-DKV-Replication"
 
 // NewHandler builds a node handler from validated static cluster configuration.
 func NewHandler(cfg config.Config, logger *slog.Logger, values *store.Store) (http.Handler, error) {
+	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate node config: %w", err)
 	}
@@ -41,25 +42,31 @@ func NewHandler(cfg config.Config, logger *slog.Logger, values *store.Store) (ht
 	}
 
 	server := &server{
-		nodeID:  cfg.NodeID,
-		logger:  logger.With("node_id", cfg.NodeID),
-		values:  values,
-		ring:    hashRing,
-		peers:   peers,
-		timeout: timeout,
-		client:  &http.Client{Timeout: timeout},
+		nodeID:            cfg.NodeID,
+		logger:            logger.With("node_id", cfg.NodeID),
+		values:            values,
+		ring:              hashRing,
+		peers:             peers,
+		timeout:           timeout,
+		client:            &http.Client{Timeout: timeout},
+		replicationFactor: cfg.ReplicationFactor,
+		writeQuorum:       cfg.WriteQuorum,
+		readQuorum:        cfg.ReadQuorum,
 	}
 	return server.routes(), nil
 }
 
 type server struct {
-	nodeID  string
-	logger  *slog.Logger
-	values  *store.Store
-	ring    *ring.Ring
-	peers   map[string]string
-	timeout time.Duration
-	client  *http.Client
+	nodeID            string
+	logger            *slog.Logger
+	values            *store.Store
+	ring              *ring.Ring
+	peers             map[string]string
+	timeout           time.Duration
+	client            *http.Client
+	replicationFactor int
+	writeQuorum       int
+	readQuorum        int
 }
 
 func (s *server) routes() http.Handler {
@@ -69,6 +76,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/kv/", s.publicKeyValue)
 	mux.HandleFunc("/internal/route/kv/", s.internalKeyValue)
 	mux.HandleFunc("/internal/replicate/kv/", s.internalReplication)
+	mux.HandleFunc("/internal/read/kv/", s.internalRead)
 	return mux
 }
 
@@ -164,7 +172,7 @@ func (s *server) serveLocal(w http.ResponseWriter, r *http.Request, key string) 
 	case http.MethodPut:
 		s.putValue(w, r, key)
 	case http.MethodGet:
-		getValue(w, key, s.values)
+		s.getValue(w, r, key)
 	case http.MethodDelete:
 		deleteValue(w, key, s.values)
 	default:
@@ -207,27 +215,36 @@ func (s *server) putValue(w http.ResponseWriter, r *http.Request, key string) {
 	if created {
 		status = http.StatusCreated
 	}
-	owners := s.ring.Owners(key, 2)
-	if len(owners) < 2 {
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"key": key, "value": *request.Value, "version": record.Version,
-			"replication": "partial", "replica": "",
-		})
-		return
-	}
-	replica := owners[1]
-	if err := s.replicate(r.Context(), key, record, replica); err != nil {
-		s.logger.Warn("replication failed", "key", key, "replica_target", replica, "error", err)
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"key": key, "value": *request.Value, "version": record.Version,
-			"replication": "partial", "replica": replica,
-		})
+	owners := s.ring.Owners(key, s.replicationFactor)
+	acks := s.writeAcks(r.Context(), key, record, owners)
+	if acks < s.writeQuorum {
+		writeError(w, http.StatusServiceUnavailable, "write_quorum_unavailable", "write quorum could not be reached")
 		return
 	}
 	writeJSON(w, status, map[string]any{
 		"key": key, "value": *request.Value, "version": record.Version,
-		"replication": "acknowledged", "replica": replica,
+		"replication": "acknowledged", "acknowledgements": acks,
 	})
+}
+
+func (s *server) writeAcks(parent context.Context, key string, record store.Record, owners []string) int {
+	ctx, cancel := context.WithTimeout(parent, s.timeout)
+	defer cancel()
+	acks := 1
+	results := make(chan bool, len(owners)-1)
+	for _, peer := range owners[1:] {
+		go func(peer string) { results <- s.replicate(ctx, key, record, peer) == nil }(peer)
+	}
+	for pending := len(owners) - 1; pending > 0; pending-- {
+		if <-results {
+			acks++
+			if acks >= s.writeQuorum {
+				cancel()
+				return acks
+			}
+		}
+	}
+	return acks
 }
 
 func (s *server) replicate(parent context.Context, key string, record store.Record, replica string) error {
@@ -313,17 +330,94 @@ func (s *server) internalReplication(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func getValue(w http.ResponseWriter, key string, values *store.Store) {
-	record, err := values.GetRecord(key)
+func (s *server) internalRead(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, "/internal/read/kv/")
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	if key == "" {
+		emptyKey(w, r)
+		return
+	}
+	record, err := s.values.GetRecord(key)
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "key_not_found", "key does not exist")
+		writeJSON(w, http.StatusOK, map[string]any{"found": false})
 		return
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "could not read value")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"key": key, "value": record.Value, "version": record.Version})
+	writeJSON(w, http.StatusOK, map[string]any{"found": true, "value": record.Value, "version": record.Version})
+}
+
+func (s *server) getValue(w http.ResponseWriter, r *http.Request, key string) {
+	owners := s.ring.Owners(key, s.replicationFactor)
+	type result struct {
+		record store.Record
+		found  bool
+		ok     bool
+	}
+	results := make(chan result, len(owners))
+	for _, peer := range owners {
+		if peer == s.nodeID {
+			record, err := s.values.GetRecord(key)
+			results <- result{record: record, found: err == nil, ok: err == nil || errors.Is(err, store.ErrNotFound)}
+			continue
+		}
+		go func(peer string) {
+			ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+s.peers[peer]+"/internal/read/kv/"+url.PathEscape(key), nil)
+			if err != nil {
+				results <- result{}
+				return
+			}
+			resp, err := s.client.Do(req)
+			if err != nil || resp.StatusCode != http.StatusOK {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				results <- result{}
+				return
+			}
+			defer resp.Body.Close()
+			var body struct {
+				Found   bool   `json:"found"`
+				Value   string `json:"value"`
+				Version uint64 `json:"version"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&body) != nil {
+				results <- result{}
+				return
+			}
+			results <- result{record: store.Record{Value: body.Value, Version: body.Version}, found: body.Found, ok: true}
+		}(peer)
+	}
+	successes := 0
+	var best store.Record
+	found := false
+	for range owners {
+		result := <-results
+		if !result.ok {
+			continue
+		}
+		successes++
+		if result.found && (!found || result.record.Version > best.Version || (result.record.Version == best.Version && result.record.Value > best.Value)) {
+			best = result.record
+			found = true
+		}
+	}
+	if successes < s.readQuorum {
+		writeError(w, http.StatusServiceUnavailable, "read_quorum_unavailable", "read quorum could not be reached")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "key_not_found", "key does not exist")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"key": key, "value": best.Value, "version": best.Version})
 }
 
 func deleteValue(w http.ResponseWriter, key string, values *store.Store) {

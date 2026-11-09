@@ -45,17 +45,17 @@ func TestKeyValueAPI(t *testing.T) {
 	handler := testHandler()
 
 	response := request(t, handler, http.MethodPut, "/kv/course", `{"value":"go"}`)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("create status = %d, want %d", response.Code, http.StatusAccepted)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d", response.Code, http.StatusCreated)
 	}
 	assertJSON(t, response.Body.String(), map[string]any{
 		"key": "course", "value": "go", "version": float64(1),
-		"replication": "partial", "replica": "",
+		"replication": "acknowledged", "acknowledgements": float64(1),
 	})
 
 	response = request(t, handler, http.MethodPut, "/kv/course", `{"value":"systems"}`)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("replace status = %d, want %d", response.Code, http.StatusAccepted)
+	if response.Code != http.StatusOK {
+		t.Fatalf("replace status = %d, want %d", response.Code, http.StatusOK)
 	}
 	response = request(t, handler, http.MethodGet, "/kv/course", "")
 	if response.Code != http.StatusOK {
@@ -123,11 +123,12 @@ func TestKeyValueAPIRejectsOversizedValue(t *testing.T) {
 
 func testHandler() http.Handler {
 	handler, err := NewHandler(config.Config{
-		NodeID:         "node-1",
-		ListenAddr:     "127.0.0.1:8081",
-		VirtualNodes:   8,
-		RequestTimeout: "500ms",
-		Nodes:          []config.Peer{{ID: "node-1", Address: "127.0.0.1:8081"}},
+		NodeID:            "node-1",
+		ListenAddr:        "127.0.0.1:8081",
+		VirtualNodes:      8,
+		RequestTimeout:    "500ms",
+		ReplicationFactor: 1, WriteQuorum: 1, ReadQuorum: 1,
+		Nodes: []config.Peer{{ID: "node-1", Address: "127.0.0.1:8081"}},
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)), store.New(store.DefaultMaxValueBytes))
 	if err != nil {
 		panic(err)

@@ -131,6 +131,30 @@ handoff, quorum, read repair, or automatic rebalancing. Deletes are still
 primary-local in this phase and are not replicated as tombstones; future work
 must address that before replicas are used for reads or failover.
 
+## Quorums
+
+Phase 6 configures `replication_factor` (`N`), `write_quorum` (`W`), and
+`read_quorum` (`R`); the supplied three-node configuration uses `N=3, W=2,
+R=2`. It validates all values against cluster membership. The useful overlap
+condition is `R + W > N`: here, `2 + 2 > 3`, so a successful read and a
+successful write have at least one replica in common while membership is
+static.
+
+The primary writes locally, sends the versioned update to every other target in
+parallel, and returns success only after `W` acknowledgements. Otherwise it
+returns `503 write_quorum_unavailable`, even though some nodes may have stored
+the update. Reads query all `N` owners in parallel and require `R` responses;
+they return `503 read_quorum_unavailable` if too few reply. A missing record is
+a successful read response; if all quorum responses are missing, the public
+result is `404`. The selected record is highest version, with lexical value
+tie-breaking for malformed conflicting equal-version records. Phase 6 does not
+perform read repair.
+
+This is not linearizability or consensus: a failed write may have reached a
+subset of replicas, versions are primary-local counters, membership is static,
+and there is no durable recovery, election, anti-entropy, or conflict-free
+multi-writer policy.
+
 ## Test
 
 ```sh
