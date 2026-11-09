@@ -73,6 +73,26 @@ curl -i -X DELETE http://127.0.0.1:8081/kv/course
 Invalid keys or JSON receive `400 Bad Request`; oversized values receive
 `413 Payload Too Large`; unsupported methods receive `405 Method Not Allowed`.
 
+## Consistent-hash ring
+
+The Phase 3 ring uses SHA-256 for both key and virtual-node tokens. Each
+physical node has a configurable number of virtual nodes (64 by default).
+Entries are sorted by token; a token collision is resolved by node ID and then
+virtual-node index. A key belongs to the first entry clockwise from its token.
+`Owners(key, count)` continues clockwise and skips virtual nodes already
+represented, so each returned owner is a distinct physical node.
+
+Display sample placement without starting a server:
+
+```sh
+go run ./cmd/ringdemo -virtual-nodes 64 alpha beta course
+```
+
+When a node joins, only keys for which it becomes the first clockwise owner
+move to it. When it leaves, its keys move to the next clockwise owner. With a
+well-distributed ring, each membership change moves roughly that node's share
+of keys; the exact amount depends on the virtual-node tokens.
+
 ## Test
 
 ```sh
