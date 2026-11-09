@@ -15,6 +15,7 @@ import (
 
 	"github.com/pranavb1234/dkvStore/internal/config"
 	"github.com/pranavb1234/dkvStore/internal/node"
+	"github.com/pranavb1234/dkvStore/internal/store"
 )
 
 func main() {
@@ -34,7 +35,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("node_id", cfg.NodeID)
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           node.NewHandler(cfg.NodeID, logger),
+		Handler:           node.NewHandler(cfg.NodeID, logger, store.New(store.DefaultMaxValueBytes)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
