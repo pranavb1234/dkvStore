@@ -1,0 +1,120 @@
+// Package config loads and validates static node configuration.
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+// Config identifies this process and the complete static cluster membership.
+// Nodes must include the local node exactly once.
+type Config struct {
+	NodeID     string `json:"node_id"`
+	ListenAddr string `json:"listen_addr"`
+	Nodes      []Peer `json:"nodes"`
+}
+
+// Peer is one node's stable identity and HTTP listen address.
+type Peer struct {
+	ID      string `json:"id"`
+	Address string `json:"address"`
+}
+
+// Load reads a JSON configuration file and validates it before returning it.
+func Load(path string) (Config, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("open config: %w", err)
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+
+	var cfg Config
+	if err := decoder.Decode(&cfg); err != nil {
+		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return Config{}, fmt.Errorf("decode config: multiple JSON values")
+		}
+		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// Validate verifies identities, addresses, duplicate entries, and the local
+// node's matching membership entry.
+func (c Config) Validate() error {
+	if !validNodeID(c.NodeID) {
+		return fmt.Errorf("invalid node_id %q", c.NodeID)
+	}
+	if err := validAddress(c.ListenAddr); err != nil {
+		return fmt.Errorf("invalid listen_addr: %w", err)
+	}
+	if len(c.Nodes) == 0 {
+		return fmt.Errorf("nodes must contain the complete membership list")
+	}
+
+	ids := make(map[string]struct{}, len(c.Nodes))
+	addresses := make(map[string]struct{}, len(c.Nodes))
+	selfAddress := ""
+	for _, peer := range c.Nodes {
+		if !validNodeID(peer.ID) {
+			return fmt.Errorf("invalid node id %q", peer.ID)
+		}
+		if err := validAddress(peer.Address); err != nil {
+			return fmt.Errorf("invalid address for node %q: %w", peer.ID, err)
+		}
+		if _, exists := ids[peer.ID]; exists {
+			return fmt.Errorf("duplicate node id %q", peer.ID)
+		}
+		if _, exists := addresses[peer.Address]; exists {
+			return fmt.Errorf("duplicate node address %q", peer.Address)
+		}
+		ids[peer.ID] = struct{}{}
+		addresses[peer.Address] = struct{}{}
+		if peer.ID == c.NodeID {
+			selfAddress = peer.Address
+		}
+	}
+
+	if selfAddress == "" {
+		return fmt.Errorf("node_id %q is missing from nodes", c.NodeID)
+	}
+	if selfAddress != c.ListenAddr {
+		return fmt.Errorf("self address %q does not match listen_addr %q", selfAddress, c.ListenAddr)
+	}
+	return nil
+}
+
+func validNodeID(id string) bool {
+	return nodeIDPattern.MatchString(id)
+}
+
+func validAddress(address string) error {
+	if strings.TrimSpace(address) != address || address == "" {
+		return fmt.Errorf("address must not be empty or contain surrounding whitespace")
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || host == "" {
+		return fmt.Errorf("must be host:port")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
+	}
+	return nil
+}

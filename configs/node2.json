@@ -1,0 +1,9 @@
+{
+  "node_id": "node2",
+  "listen_addr": "127.0.0.1:8082",
+  "nodes": [
+    { "id": "node1", "address": "127.0.0.1:8081" },
+    { "id": "node2", "address": "127.0.0.1:8082" },
+    { "id": "node3", "address": "127.0.0.1:8083" }
+  ]
+}
