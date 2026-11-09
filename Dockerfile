@@ -5,10 +5,12 @@ COPY go.mod ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/dkvnode ./cmd/dkvnode
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/dashboard ./cmd/dashboard
 
 FROM alpine:3.20
 RUN adduser -D -H -u 10001 dkv
 USER dkv
 COPY --from=build /out/dkvnode /usr/local/bin/dkvnode
+COPY --from=build /out/dashboard /usr/local/bin/dashboard
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/dkvnode"]

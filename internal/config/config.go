@@ -29,6 +29,7 @@ type Config struct {
 	ReadQuorum          int    `json:"read_quorum"`
 	HealthCheckInterval string `json:"health_check_interval"`
 	HealthCheckTimeout  string `json:"health_check_timeout"`
+	DemoAdminEnabled    bool   `json:"demo_admin_enabled"`
 }
 
 // Peer is one node's stable identity and HTTP listen address.

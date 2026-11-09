@@ -1,4 +1,14 @@
 services:
+  dashboard:
+    build: .
+    entrypoint: ["/usr/local/bin/dashboard"]
+    ports:
+      - "8080:8080"
+    depends_on:
+      - node1
+      - node2
+      - node3
+
   node1:
     build: .
     command: ["-config", "/etc/dkv/node1.json"]

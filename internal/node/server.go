@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pranavb1234/dkvStore/internal/config"
@@ -54,6 +55,7 @@ func NewHandler(cfg config.Config, logger *slog.Logger, values *store.Store) (ht
 		writeQuorum:       cfg.WriteQuorum,
 		readQuorum:        cfg.ReadQuorum,
 		peerHealth:        make(map[string]bool),
+		demoAdminEnabled:  cfg.DemoAdminEnabled,
 	}
 	for _, peer := range cfg.Nodes {
 		if peer.ID != cfg.NodeID {
@@ -79,6 +81,8 @@ type server struct {
 	readQuorum        int
 	healthMu          sync.RWMutex
 	peerHealth        map[string]bool
+	demoAdminEnabled  bool
+	simulatedDown     atomic.Bool
 }
 
 func (s *server) routes() http.Handler {
@@ -89,7 +93,43 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/internal/route/kv/", s.internalKeyValue)
 	mux.HandleFunc("/internal/replicate/kv/", s.internalReplication)
 	mux.HandleFunc("/internal/read/kv/", s.internalRead)
-	return mux
+	mux.HandleFunc("/admin/simulate-down", s.simulateDown)
+	mux.HandleFunc("/admin/simulate-up", s.simulateUp)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.simulatedDown.Load() && !strings.HasPrefix(r.URL.Path, "/admin/") {
+			writeError(w, http.StatusServiceUnavailable, "node_simulated_down", "node is simulated down for the demo")
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func (s *server) simulateDown(w http.ResponseWriter, r *http.Request) {
+	if !s.demoAdminEnabled {
+		writeError(w, http.StatusNotFound, "not_found", "endpoint is disabled")
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	s.simulatedDown.Store(true)
+	s.logger.Warn("node simulated down")
+	writeJSON(w, http.StatusOK, map[string]any{"node_id": s.nodeID, "simulated_down": true})
+}
+
+func (s *server) simulateUp(w http.ResponseWriter, r *http.Request) {
+	if !s.demoAdminEnabled {
+		writeError(w, http.StatusNotFound, "not_found", "endpoint is disabled")
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	s.simulatedDown.Store(false)
+	s.logger.Info("node simulated up")
+	writeJSON(w, http.StatusOK, map[string]any{"node_id": s.nodeID, "simulated_down": false})
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {

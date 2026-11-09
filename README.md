@@ -186,6 +186,12 @@ docker compose up --build -d
 docker compose ps
 ```
 
+Open the interactive dashboard at [http://127.0.0.1:8080](http://127.0.0.1:8080). It can PUT, GET,
+and DELETE through any node, refresh node/peer health, and simulate one node
+down or up for the Compose demo. The control is enabled only in the mounted
+Docker configuration; it is a request-availability simulation, not a Docker
+container stop. Use `docker compose stop node3` for an actual stopped process.
+
 The containers use stable Compose DNS names (`node1`, `node2`, `node3`) through
 the mounted files in `configs/docker/`; peers never use `localhost`. From the
 host, verify routing and quorum writes through any exposed node:
